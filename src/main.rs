@@ -92,6 +92,7 @@ async fn main() -> Result<()> {
 
     let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
     let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
+    let mut sigusr1 = signal::unix::signal(signal::unix::SignalKind::user_defined1())?;
 
     loop {
         tokio::select! {
@@ -104,6 +105,15 @@ async fn main() -> Result<()> {
                 break;
             }
             _ = interval.tick() => {
+                match run_once(&args, &client).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!("Run failed: {e}");
+                    }
+                }
+            }
+            _ = sigusr1.recv() => {
+                tracing::info!("Received SIGUSR1, running update check");
                 match run_once(&args, &client).await {
                     Ok(_) => {}
                     Err(e) => {
