@@ -1,0 +1,11 @@
+services:
+  cf-ddns:
+    image: ghcr.io/avranju/cf-ddns:latest
+    environment:
+      - CFDNS_CLOUDFLARE_API_KEY=${CFDNS_CLOUDFLARE_API_KEY}
+      - CFDNS_CLOUDFLARE_ZONE_ID=${CFDNS_CLOUDFLARE_ZONE_ID}
+      - CFDNS_CLOUDFLARE_RECORD_ID=${CFDNS_CLOUDFLARE_RECORD_ID}
+      - CFDNS_DOMAIN_NAME=${CFDNS_DOMAIN_NAME}
+      - CFDNS_PROXIED=${CFDNS_PROXIED}
+      - CFDNS_POLL_INTERVAL_SECS=${CFDNS_POLL_INTERVAL_SECS}
+    restart: unless-stopped
