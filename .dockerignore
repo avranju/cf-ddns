@@ -1,0 +1,44 @@
+# Rust build outputs
+target/
+**/target/
+
+# Cargo lock file for libraries (keep for binaries)
+# Cargo.lock
+
+# Debug symbols
+**/*.pdb
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# GitHub workflows and CI/CD
+.github/
+
+# Docker files (no need to include in context)
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Documentation
+README.md
+LICENSE
+*.md
+
+# Test artifacts
+**/*.profraw
+**/*.gcda

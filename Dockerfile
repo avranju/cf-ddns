@@ -3,6 +3,10 @@ FROM rust:slim-bookworm AS builder
 
 WORKDIR /app
 
+# Install build dependencies
+RUN apt-get update
+RUN apt install -y libssl-dev pkg-config
+
 # Copy Rust project files
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src/
