@@ -94,6 +94,9 @@ async fn main() -> Result<()> {
     let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
     let mut sigusr1 = signal::unix::signal(signal::unix::SignalKind::user_defined1())?;
 
+    // Cache for Cloudflare record IP to avoid redundant API calls
+    let mut cf_ip_cache: Option<Ipv6Addr> = None;
+
     loop {
         tokio::select! {
             _ = sigterm.recv() => {
@@ -105,7 +108,7 @@ async fn main() -> Result<()> {
                 break;
             }
             _ = interval.tick() => {
-                match run_once(&args, &client).await {
+                match run_once(&args, &client, &mut cf_ip_cache).await {
                     Ok(_) => {}
                     Err(e) => {
                         tracing::error!("Run failed: {e}");
@@ -114,7 +117,7 @@ async fn main() -> Result<()> {
             }
             _ = sigusr1.recv() => {
                 tracing::info!("Received SIGUSR1, running update check");
-                match run_once(&args, &client).await {
+                match run_once(&args, &client, &mut cf_ip_cache).await {
                     Ok(_) => {}
                     Err(e) => {
                         tracing::error!("Run failed: {e}");
@@ -127,7 +130,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_once(args: &Args, client: &CfClient) -> Result<()> {
+async fn run_once(args: &Args, client: &CfClient, cache: &mut Option<Ipv6Addr>) -> Result<()> {
     // get current public ip
     let ip = find_public_ip().await?;
     let ip = ip.parse::<Ipv6Addr>().map_err(|e| {
@@ -135,12 +138,20 @@ async fn run_once(args: &Args, client: &CfClient) -> Result<()> {
         e
     })?;
 
-    // get current cloudflare record ip
-    let record_ip = find_cf_record_ip(client, &args.zone_id, &args.record_id).await?;
+    // get current cloudflare record ip (from cache if available)
+    let record_ip = if let Some(cached_ip) = *cache {
+        tracing::debug!("Using cached Cloudflare IP: {cached_ip}");
+        cached_ip
+    } else {
+        let ip = find_cf_record_ip(client, &args.zone_id, &args.record_id).await?;
+        tracing::debug!("Retrieved Cloudflare IP from API: {ip}");
+        *cache = Some(ip);
+        ip
+    };
 
     // if ip has changed, update cloudflare record
     if ip != record_ip {
-        update_cf_record(args, client, ip).await?;
+        update_cf_record(args, client, ip, cache).await?;
         tracing::info!("Updated IP {ip}");
     } else {
         tracing::info!("IP {ip} has not changed");
@@ -149,7 +160,12 @@ async fn run_once(args: &Args, client: &CfClient) -> Result<()> {
     Ok(())
 }
 
-async fn update_cf_record(args: &Args, client: &CfClient, ip: Ipv6Addr) -> Result<()> {
+async fn update_cf_record(
+    args: &Args,
+    client: &CfClient,
+    ip: Ipv6Addr,
+    cache: &mut Option<Ipv6Addr>,
+) -> Result<()> {
     let endpoint = dns::UpdateDnsRecord {
         zone_identifier: &args.zone_id,
         identifier: &args.record_id,
@@ -162,6 +178,9 @@ async fn update_cf_record(args: &Args, client: &CfClient, ip: Ipv6Addr) -> Resul
     };
 
     let _ = client.request(&endpoint).await?;
+
+    // Update cache with the new IP after successful update
+    *cache = Some(ip);
 
     Ok(())
 }
