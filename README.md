@@ -5,17 +5,33 @@
 ## Usage
 
 ```bash
-cf-ddns
+cf-ddns --config config.json
 ```
 
-## Environment Variables
+## Configuration
 
-- `CFDNS_CLOUDFLARE_API_KEY`: Cloudflare API token
-- `CFDNS_CLOUDFLARE_ZONE_ID`: Cloudflare zone ID
-- `CFDNS_CLOUDFLARE_RECORD_ID`: Cloudflare record ID
-- `CFDNS_DOMAIN_NAME`: Domain name (only the record name, not the full domain)
-- `CFDNS_PROXIED`: Proxied (default: true)
-- `CFDNS_POLL_INTERVAL_SECS`: Poll interval in seconds (default: 300)
+The application requires a JSON configuration file. You can specify the path to the config file using the `--config` argument or the `CFDNS_CONFIG_FILE` environment variable.
+
+Example `config.json`:
+
+```json
+{
+    "api_key": "your_api_key",
+    "zone_id": "your_zone_id",
+    "proxied": true,
+    "poll_interval_secs": 300,
+    "records": [
+        {
+            "record_id": "record_id_1",
+            "domain_name": "example.com"
+        },
+        {
+            "record_id": "record_id_2",
+            "domain_name": "sub.example.com"
+        }
+    ]
+}
+```
 
 ## Building
 
@@ -27,8 +43,8 @@ cargo build --release
 
 ## Running
 
-Create a `.env` file with the environment variables listed above.
+Create a `config.json` file with your settings.
 
 ```bash
-cargo run --release
+cargo run --release -- --config config.json
 ```
