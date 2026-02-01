@@ -16,22 +16,33 @@ Example `config.json`:
 
 ```json
 {
-    "api_key": "your_api_key",
-    "zone_id": "your_zone_id",
-    "proxied": true,
     "poll_interval_secs": 300,
-    "records": [
-        {
-            "record_id": "record_id_1",
-            "domain_name": "example.com"
-        },
-        {
-            "record_id": "record_id_2",
-            "domain_name": "sub.example.com"
-        }
-    ]
+    "cloudflare": {
+        "api_key": "your_api_key",
+        "zone_id": "your_zone_id",
+        "proxied": true,
+        "records": [
+            {
+                "record_id": "record_id_1",
+                "domain_name": "example.com"
+            },
+            {
+                "record_id": "record_id_2",
+                "domain_name": "sub.example.com"
+            }
+        ]
+    },
+    "unifi": {
+        "base_url": "https://192.168.1.1",
+        "site_id": "your_site_uuid",
+        "api_key": "your_unifi_api_key",
+        "verify_tls": false,
+        "address_ids": ["your_address_list_uuid"]
+    }
 }
 ```
+
+The `unifi` section is optional. If included, it updates IPv6 traffic matching lists on your UniFi router when the IP changes.
 
 ## Building
 

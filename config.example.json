@@ -1,16 +1,27 @@
 {
-    "api_key": "test_api_key",
-    "zone_id": "test_zone_id",
+  "poll_interval_secs": 300,
+  "cloudflare": {
+    "api_key": "your_cloudflare_api_key",
+    "zone_id": "your_zone_id",
     "proxied": true,
-    "poll_interval_secs": 300,
     "records": [
-        {
-            "record_id": "record_1",
-            "domain_name": "example.com"
-        },
-        {
-            "record_id": "record_2",
-            "domain_name": "sub.example.com"
-        }
+      {
+        "record_id": "record_1",
+        "domain_name": "example.com"
+      },
+      {
+        "record_id": "record_2",
+        "domain_name": "sub.example.com"
+      }
     ]
+  },
+  "unifi": {
+    "base_url": "https://192.168.1.1",
+    "site_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+    "api_key": "your_unifi_api_key",
+    "verify_tls": false,
+    "address_ids": [
+      "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    ]
+  }
 }
