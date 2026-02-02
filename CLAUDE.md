@@ -22,7 +22,7 @@ The application runs in a polling loop using `tokio::select!` to handle:
 
 ### Core Flow (`run_once`)
 
-1. Fetches current public IPv6 from `ifconfig.co/json`
+1. Reads global, non-temporary IPv6 address from `/proc/net/if_inet6`
 2. Compares against cached IPs for each configured service
 3. Updates Cloudflare DNS AAAA records if changed
 4. Updates UniFi traffic matching lists if configured and changed
@@ -40,6 +40,7 @@ Both Cloudflare record IPs and UniFi list IPs are cached in-memory (`HashMap<Str
 
 Config is JSON with nested sections:
 - `poll_interval_secs`: Top-level polling interval
+- `interface`: Optional - Network interface to read IPv6 from (uses first valid address if not specified)
 - `cloudflare`: Required - API key, zone ID, and DNS records to update
 - `unifi`: Optional - Router base URL, site ID, API key, and address list IDs
 

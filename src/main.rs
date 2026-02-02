@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::BufReader;
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::Ipv6Addr;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -28,6 +28,9 @@ struct Args {
 pub struct Config {
     #[serde(default = "default_poll_interval")]
     pub poll_interval_secs: u64,
+    /// Optional network interface name to get IPv6 address from.
+    /// If not specified, uses the first global non-temporary IPv6 address found.
+    pub interface: Option<String>,
     pub cloudflare: CloudflareConfig,
     pub unifi: Option<UnifiConfig>,
 }
@@ -93,31 +96,6 @@ fn default_verify_tls() -> bool {
     false
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserAgent {
-    pub product: String,
-    pub version: String,
-    pub comment: String,
-    pub raw_value: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IpInfo {
-    pub ip: String,
-    pub country: String,
-    pub country_iso: String,
-    pub country_eu: bool,
-    pub region_name: String,
-    pub region_code: String,
-    pub zip_code: String,
-    pub city: String,
-    pub latitude: f64,
-    pub longitude: f64,
-    pub time_zone: String,
-    pub asn: String,
-    pub asn_org: String,
-    pub user_agent: Option<UserAgent>,
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -205,12 +183,8 @@ async fn run_once(
     unifi_client: Option<&HttpClient>,
     unifi_cache: &mut HashMap<String, Ipv6Addr>,
 ) -> Result<()> {
-    // get current public ip
-    let ip = find_public_ip().await?;
-    let ip = ip.parse::<Ipv6Addr>().map_err(|e| {
-        tracing::warn!("Failed to parse public IP: {e}");
-        e
-    })?;
+    // get current public ip from local network interfaces
+    let ip = find_local_ipv6(config.interface.as_deref())?;
 
     // Update Cloudflare DNS records
     let cf_config = &config.cloudflare;
@@ -296,16 +270,82 @@ async fn update_cf_record(
     Ok(())
 }
 
-async fn find_public_ip() -> Result<String> {
-    let client = HttpClient::builder()
-        .local_address(IpAddr::from(Ipv6Addr::UNSPECIFIED))
-        .build()?;
+/// Finds a global, non-temporary IPv6 address from local network interfaces.
+///
+/// Reads from /proc/net/if_inet6 which has the format:
+/// address device_index prefix_len scope flags interface_name
+///
+/// Only returns addresses where:
+/// - scope is 0x00 (global)
+/// - IFA_F_TEMPORARY flag (0x01) is NOT set
+fn find_local_ipv6(interface_filter: Option<&str>) -> Result<Ipv6Addr> {
+    const IFA_F_TEMPORARY: u8 = 0x01;
+    const SCOPE_GLOBAL: u8 = 0x00;
 
-    let resp = client.get("https://ifconfig.co/json").send().await?;
+    let content = fs::read_to_string("/proc/net/if_inet6")
+        .context("Failed to read /proc/net/if_inet6")?;
 
-    let ip = resp.json::<IpInfo>().await?;
+    for line in content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 6 {
+            continue;
+        }
 
-    Ok(ip.ip)
+        let addr_hex = parts[0];
+        let scope = u8::from_str_radix(parts[3], 16).unwrap_or(0xff);
+        let flags = u8::from_str_radix(parts[4], 16).unwrap_or(0);
+        let iface = parts[5];
+
+        // Filter by interface if specified
+        if let Some(filter) = interface_filter {
+            if iface != filter {
+                continue;
+            }
+        }
+
+        // Check for global scope
+        if scope != SCOPE_GLOBAL {
+            continue;
+        }
+
+        // Exclude temporary addresses (privacy extensions)
+        if flags & IFA_F_TEMPORARY != 0 {
+            continue;
+        }
+
+        // Parse the IPv6 address from compact hex format
+        if addr_hex.len() != 32 {
+            continue;
+        }
+
+        let mut segments = [0u16; 8];
+        let mut valid = true;
+        for (i, segment) in segments.iter_mut().enumerate() {
+            let start = i * 4;
+            match u16::from_str_radix(&addr_hex[start..start + 4], 16) {
+                Ok(v) => *segment = v,
+                Err(_) => {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+
+        if !valid {
+            continue;
+        }
+
+        let addr = Ipv6Addr::from(segments);
+        tracing::debug!("Found global IPv6 address {addr} on interface {iface}");
+        return Ok(addr);
+    }
+
+    Err(anyhow::anyhow!(
+        "No suitable global non-temporary IPv6 address found{}",
+        interface_filter
+            .map(|i| format!(" on interface {i}"))
+            .unwrap_or_default()
+    ))
 }
 
 async fn find_cf_record_ip(

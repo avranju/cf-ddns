@@ -1,5 +1,6 @@
 {
   "poll_interval_secs": 300,
+  "interface": "eth0",
   "cloudflare": {
     "api_key": "your_cloudflare_api_key",
     "zone_id": "your_zone_id",
