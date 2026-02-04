@@ -270,20 +270,16 @@ async fn update_cf_record(
     Ok(())
 }
 
-/// Finds a global, non-temporary IPv6 address from local network interfaces.
+/// Parses IPv6 addresses from /proc/net/if_inet6 content.
 ///
-/// Reads from /proc/net/if_inet6 which has the format:
-/// address device_index prefix_len scope flags interface_name
+/// The format is: address device_index prefix_len scope flags interface_name
 ///
 /// Only returns addresses where:
 /// - scope is 0x00 (global)
 /// - IFA_F_TEMPORARY flag (0x01) is NOT set
-fn find_local_ipv6(interface_filter: Option<&str>) -> Result<Ipv6Addr> {
+fn parse_ipv6_from_proc_content(content: &str, interface_filter: Option<&str>) -> Result<Ipv6Addr> {
     const IFA_F_TEMPORARY: u8 = 0x01;
     const SCOPE_GLOBAL: u8 = 0x00;
-
-    let content = fs::read_to_string("/proc/net/if_inet6")
-        .context("Failed to read /proc/net/if_inet6")?;
 
     for line in content.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -346,6 +342,16 @@ fn find_local_ipv6(interface_filter: Option<&str>) -> Result<Ipv6Addr> {
             .map(|i| format!(" on interface {i}"))
             .unwrap_or_default()
     ))
+}
+
+/// Finds a global, non-temporary IPv6 address from local network interfaces.
+///
+/// Reads from /proc/net/if_inet6 and parses the content to find suitable addresses.
+fn find_local_ipv6(interface_filter: Option<&str>) -> Result<Ipv6Addr> {
+    let content = fs::read_to_string("/proc/net/if_inet6")
+        .context("Failed to read /proc/net/if_inet6")?;
+    
+    parse_ipv6_from_proc_content(&content, interface_filter)
 }
 
 async fn find_cf_record_ip(
@@ -430,4 +436,92 @@ async fn update_unifi_address_list(
     cache.insert(list_id.to_string(), ip);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ipv6_from_proc_content_single_address() {
+        let content = "fe80000000000000020c29fffe123456 02 40 20 80 eth0\n\
+                       20010db8000000000000000000000001 01 40 00 80 eth0";
+        
+        let result = parse_ipv6_from_proc_content(content, None);
+        assert!(result.is_ok());
+        let addr = result.unwrap();
+        assert_eq!(addr.to_string(), "2001:db8::1");
+    }
+
+    #[test]
+    fn test_parse_ipv6_from_proc_content_with_interface_filter() {
+        let content = "20010db8000000000000000000000001 01 40 00 80 eth0\n\
+                       20010db8000000000000000000000002 01 40 00 80 eth1";
+        
+        let result = parse_ipv6_from_proc_content(content, Some("eth1"));
+        assert!(result.is_ok());
+        let addr = result.unwrap();
+        assert_eq!(addr.to_string(), "2001:db8::2");
+    }
+
+    #[test]
+    fn test_parse_ipv6_from_proc_content_excludes_temporary() {
+        let content = "20010db8000000000000000000000001 01 40 00 81 eth0\n\
+                       20010db8000000000000000000000002 01 40 00 80 eth0";
+        
+        let result = parse_ipv6_from_proc_content(content, None);
+        assert!(result.is_ok());
+        let addr = result.unwrap();
+        assert_eq!(addr.to_string(), "2001:db8::2");
+    }
+
+    #[test]
+    fn test_parse_ipv6_from_proc_content_excludes_non_global() {
+        let content = "20010db8000000000000000000000001 01 40 20 80 eth0\n\
+                       20010db8000000000000000000000002 01 40 00 80 eth0";
+        
+        let result = parse_ipv6_from_proc_content(content, None);
+        assert!(result.is_ok());
+        let addr = result.unwrap();
+        assert_eq!(addr.to_string(), "2001:db8::2");
+    }
+
+    #[test]
+    fn test_parse_ipv6_from_proc_content_no_valid_address() {
+        let content = "fe80000000000000020c29fffe123456 02 40 20 80 eth0\n\
+                       20010db8000000000000000000000001 01 40 20 80 eth0";
+        
+        let result = parse_ipv6_from_proc_content(content, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No suitable global non-temporary IPv6 address found"));
+    }
+
+    #[test]
+    fn test_parse_ipv6_from_proc_content_empty_content() {
+        let content = "";
+        
+        let result = parse_ipv6_from_proc_content(content, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No suitable global non-temporary IPv6 address found"));
+    }
+
+    #[test]
+    fn test_parse_ipv6_from_proc_content_malformed_lines() {
+        let content = "invalid_line\n\
+                       20010db8000000000000000000000001 01 40 00 80 eth0";
+        
+        let result = parse_ipv6_from_proc_content(content, None);
+        assert!(result.is_ok());
+        let addr = result.unwrap();
+        assert_eq!(addr.to_string(), "2001:db8::1");
+    }
+
+    #[test]
+    fn test_parse_ipv6_from_proc_content_interface_not_found() {
+        let content = "20010db8000000000000000000000001 01 40 00 80 eth0";
+        
+        let result = parse_ipv6_from_proc_content(content, Some("eth1"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No suitable global non-temporary IPv6 address found on interface eth1"));
+    }
 }
