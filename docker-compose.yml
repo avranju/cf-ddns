@@ -3,5 +3,6 @@ services:
     image: ghcr.io/avranju/cf-ddns:latest
     volumes:
       - ./config.json:/app/config.json
+      - /proc/net/if_inet6:/proc/net/if_inet6:ro
     command: [ "--config", "/app/config.json" ]
     restart: unless-stopped

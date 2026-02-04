@@ -59,3 +59,20 @@ Create a `config.json` file with your settings.
 ```bash
 cargo run --release -- --config config.json
 ```
+
+## Docker
+
+When running in Docker, the application needs access to the host's `/proc/net/if_inet6` file to read IPv6 addresses. The provided `docker-compose.yml` includes the necessary volume mount:
+
+```yaml
+volumes:
+  - /proc/net/if_inet6:/proc/net/if_inet6:ro
+```
+
+To run with Docker Compose:
+
+```bash
+docker-compose up -d
+```
+
+The volume mount is required because the application reads IPv6 addresses directly from `/proc/net/if_inet6` to detect public address changes.
