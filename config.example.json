@@ -23,6 +23,9 @@
     "verify_tls": false,
     "address_ids": [
       "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    ],
+    "firewall_policy_ids": [
+      "ffffffff-ffff-ffff-ffff-ffffffffffff"
     ]
   }
 }
