@@ -45,3 +45,7 @@ Config is JSON with nested sections:
 - `unifi`: Optional - Router base URL, site ID, API key, and address list IDs
 
 See `config.example.json` for the full schema.
+
+## Git Workflow
+
+Do not automatically stage or commit changes to git unless explicitly asked to do so in that specific instance.
