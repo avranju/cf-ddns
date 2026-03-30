@@ -26,5 +26,7 @@ WORKDIR /app
 # Copy the compiled executable from the builder stage
 COPY --from=builder /app/target/release/cf-ddns /app/cf-ddns
 
-# Set the entrypoint to run the application
+# Set the entrypoint to run the application.
+# CMD provides the default subcommand, which can be overridden at runtime.
 ENTRYPOINT ["/app/cf-ddns"]
+CMD ["ddns"]
