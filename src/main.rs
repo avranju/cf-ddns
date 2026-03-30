@@ -5,6 +5,7 @@ use std::net::Ipv6Addr;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use chrono::Local;
 use clap::Parser;
 use cloudflare::{
     endpoints::dns::dns,
@@ -52,6 +53,10 @@ pub struct UnifiConfig {
     #[serde(default = "default_verify_tls")]
     pub verify_tls: bool,
     pub address_ids: Vec<String>,
+    /// IDs of firewall policies to "kick" (update description with a timestamp)
+    /// after an address list update, to force the firewall to re-evaluate rules.
+    #[serde(default)]
+    pub firewall_policy_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -68,6 +73,11 @@ pub struct UnifiAddressItem {
     #[serde(rename = "type")]
     pub item_type: String,
     pub value: String,
+}
+
+#[derive(Debug, Serialize)]
+struct UnifiFirewallPolicyPatch {
+    description: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -219,6 +229,7 @@ async fn run_once(
 
     // Update UniFi address lists if configured
     if let (Some(unifi_config), Some(http_client)) = (&config.unifi, unifi_client) {
+        let mut any_updated = false;
         for list_id in &unifi_config.address_ids {
             // Check cache first
             let cached_ip = unifi_cache.get(list_id).copied();
@@ -230,6 +241,7 @@ async fn run_once(
                 {
                     Ok(()) => {
                         tracing::info!("Updated UniFi address list {list_id} to {ip}");
+                        any_updated = true;
                     }
                     Err(e) => {
                         tracing::error!("Failed to update UniFi address list {list_id}: {e}");
@@ -237,6 +249,19 @@ async fn run_once(
                 }
             } else {
                 tracing::info!("UniFi address list {list_id} IP {ip} has not changed");
+            }
+        }
+
+        if any_updated {
+            for policy_id in &unifi_config.firewall_policy_ids {
+                match kick_unifi_firewall_policy(http_client, unifi_config, policy_id).await {
+                    Ok(()) => {
+                        tracing::info!("Kicked UniFi firewall policy {policy_id}");
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to kick UniFi firewall policy {policy_id}: {e}");
+                    }
+                }
             }
         }
     }
@@ -434,6 +459,31 @@ async fn update_unifi_address_list(
 
     // Update cache after successful update
     cache.insert(list_id.to_string(), ip);
+
+    Ok(())
+}
+
+async fn kick_unifi_firewall_policy(
+    http_client: &HttpClient,
+    config: &UnifiConfig,
+    policy_id: &str,
+) -> Result<()> {
+    let patch_url = format!(
+        "{}/proxy/network/integration/v1/sites/{}/firewall/policies/{}",
+        config.base_url, config.site_id, policy_id
+    );
+
+    let now = Local::now();
+    let description = format!("Trigger re-eval - {}.", now.format("%d-%b-%Y, %H:%M"));
+
+    http_client
+        .patch(&patch_url)
+        .header("X-API-KEY", &config.api_key)
+        .header("Accept", "application/json")
+        .json(&UnifiFirewallPolicyPatch { description })
+        .send()
+        .await?
+        .error_for_status()?;
 
     Ok(())
 }
