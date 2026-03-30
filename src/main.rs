@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::net::Ipv6Addr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Local;
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use netlink_sys::{AsyncSocket, AsyncSocketExt, TokioSocket, protocols::NETLINK_ROUTE};
 use cloudflare::{
     endpoints::dns::dns,
     framework::{Environment, auth::Credentials, client::async_api::Client as CfClient},
@@ -20,9 +21,28 @@ use tracing_subscriber::FmtSubscriber;
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Cloudflare DDNS", long_about = None)]
 struct Args {
-    /// Path to the JSON configuration file
-    #[arg(short, long, env = "CFDNS_CONFIG_FILE")]
-    config: PathBuf,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Run the DDNS update loop
+    Ddns {
+        /// Path to the JSON configuration file
+        #[arg(short, long, env = "CFDNS_CONFIG_FILE")]
+        config: PathBuf,
+    },
+    /// Monitor host IPv6 address changes via netlink and write the if_inet6 file
+    Ipv6 {
+        /// Path to write the if_inet6 file to
+        #[arg(long)]
+        output_path: PathBuf,
+
+        /// Shell command to run to signal the ddns process after a change
+        #[arg(long, default_value = "docker kill --signal SIGUSR1 cf_ddns")]
+        signal_command: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +52,10 @@ pub struct Config {
     /// Optional network interface name to get IPv6 address from.
     /// If not specified, uses the first global non-temporary IPv6 address found.
     pub interface: Option<String>,
+    /// Path to read the if_inet6 file from. Defaults to /proc/net/if_inet6.
+    /// Override when the file is volume-mounted into the container at a different path.
+    #[serde(default = "default_if_inet6_path")]
+    pub if_inet6_path: String,
     pub cloudflare: CloudflareConfig,
     pub unifi: Option<UnifiConfig>,
 }
@@ -106,6 +130,10 @@ fn default_verify_tls() -> bool {
     false
 }
 
+fn default_if_inet6_path() -> String {
+    "/proc/net/if_inet6".to_string()
+}
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -119,64 +147,75 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    // Load configuration
-    let file = File::open(&args.config).context("Failed to open config file")?;
-    let reader = BufReader::new(file);
-    let config: Config = serde_json::from_reader(reader).context("Failed to parse config file")?;
+    match args.command {
+        Command::Ipv6 { output_path, signal_command } => {
+            run_ipv6_mode(output_path, signal_command).await?;
+        }
+        Command::Ddns { config: config_path } => {
 
-    let credentials = Credentials::UserAuthToken {
-        token: config.cloudflare.api_key.clone(),
-    };
-    let cf_client = CfClient::new(credentials, Default::default(), Environment::Production)?;
+            // Load configuration
+            let file = File::open(&config_path).context("Failed to open config file")?;
+            let reader = BufReader::new(file);
+            let config: Config =
+                serde_json::from_reader(reader).context("Failed to parse config file")?;
 
-    // Create UniFi HTTP client if configured
-    let unifi_client = if let Some(ref unifi_config) = config.unifi {
-        let client = HttpClient::builder()
-            .danger_accept_invalid_certs(!unifi_config.verify_tls)
-            .build()?;
-        Some(client)
-    } else {
-        None
-    };
+            let credentials = Credentials::UserAuthToken {
+                token: config.cloudflare.api_key.clone(),
+            };
+            let cf_client =
+                CfClient::new(credentials, Default::default(), Environment::Production)?;
 
-    let mut interval = time::interval(time::Duration::from_secs(config.poll_interval_secs));
+            // Create UniFi HTTP client if configured
+            let unifi_client = if let Some(ref unifi_config) = config.unifi {
+                let client = HttpClient::builder()
+                    .danger_accept_invalid_certs(!unifi_config.verify_tls)
+                    .build()?;
+                Some(client)
+            } else {
+                None
+            };
 
-    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
-    let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
-    let mut sigusr1 = signal::unix::signal(signal::unix::SignalKind::user_defined1())?;
+            let mut interval =
+                time::interval(time::Duration::from_secs(config.poll_interval_secs));
 
-    // Cache for Cloudflare record IP to avoid redundant API calls
-    // Map record_id -> Ipv6Addr
-    let mut cf_ip_cache: HashMap<String, Ipv6Addr> = HashMap::new();
+            let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+            let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
+            let mut sigusr1 = signal::unix::signal(signal::unix::SignalKind::user_defined1())?;
 
-    // Cache for UniFi address list IP to avoid redundant API calls
-    // Map list_id -> Ipv6Addr
-    let mut unifi_ip_cache: HashMap<String, Ipv6Addr> = HashMap::new();
+            // Cache for Cloudflare record IP to avoid redundant API calls
+            // Map record_id -> Ipv6Addr
+            let mut cf_ip_cache: HashMap<String, Ipv6Addr> = HashMap::new();
 
-    loop {
-        tokio::select! {
-            _ = sigterm.recv() => {
-                tracing::info!("Received SIGTERM, exiting");
-                break;
-            }
-            _ = sigint.recv() => {
-                tracing::info!("Received SIGINT, exiting");
-                break;
-            }
-            _ = interval.tick() => {
-                match run_once(&config, &cf_client, &mut cf_ip_cache, unifi_client.as_ref(), &mut unifi_ip_cache).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::error!("Run failed: {e}");
+            // Cache for UniFi address list IP to avoid redundant API calls
+            // Map list_id -> Ipv6Addr
+            let mut unifi_ip_cache: HashMap<String, Ipv6Addr> = HashMap::new();
+
+            loop {
+                tokio::select! {
+                    _ = sigterm.recv() => {
+                        tracing::info!("Received SIGTERM, exiting");
+                        break;
                     }
-                }
-            }
-            _ = sigusr1.recv() => {
-                tracing::info!("Received SIGUSR1, running update check");
-                match run_once(&config, &cf_client, &mut cf_ip_cache, unifi_client.as_ref(), &mut unifi_ip_cache).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::error!("Run failed: {e}");
+                    _ = sigint.recv() => {
+                        tracing::info!("Received SIGINT, exiting");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        match run_once(&config, &cf_client, &mut cf_ip_cache, unifi_client.as_ref(), &mut unifi_ip_cache).await {
+                            Ok(_) => {}
+                            Err(e) => {
+                                tracing::error!("Run failed: {e}");
+                            }
+                        }
+                    }
+                    _ = sigusr1.recv() => {
+                        tracing::info!("Received SIGUSR1, running update check");
+                        match run_once(&config, &cf_client, &mut cf_ip_cache, unifi_client.as_ref(), &mut unifi_ip_cache).await {
+                            Ok(_) => {}
+                            Err(e) => {
+                                tracing::error!("Run failed: {e}");
+                            }
+                        }
                     }
                 }
             }
@@ -194,7 +233,7 @@ async fn run_once(
     unifi_cache: &mut HashMap<String, Ipv6Addr>,
 ) -> Result<()> {
     // get current public ip from local network interfaces
-    let ip = find_local_ipv6(config.interface.as_deref())?;
+    let ip = find_local_ipv6(&config.if_inet6_path, config.interface.as_deref())?;
 
     // Update Cloudflare DNS records
     let cf_config = &config.cloudflare;
@@ -372,10 +411,9 @@ fn parse_ipv6_from_proc_content(content: &str, interface_filter: Option<&str>) -
 /// Finds a global, non-temporary IPv6 address from local network interfaces.
 ///
 /// Reads from /proc/net/if_inet6 and parses the content to find suitable addresses.
-fn find_local_ipv6(interface_filter: Option<&str>) -> Result<Ipv6Addr> {
-    let content = fs::read_to_string("/proc/net/if_inet6")
-        .context("Failed to read /proc/net/if_inet6")?;
-    
+fn find_local_ipv6(if_inet6_path: &str, interface_filter: Option<&str>) -> Result<Ipv6Addr> {
+    let content = fs::read_to_string(if_inet6_path)
+        .with_context(|| format!("Failed to read {if_inet6_path}"))?;
     parse_ipv6_from_proc_content(&content, interface_filter)
 }
 
@@ -460,6 +498,75 @@ async fn update_unifi_address_list(
     // Update cache after successful update
     cache.insert(list_id.to_string(), ip);
 
+    Ok(())
+}
+
+/// RTNLGRP_IPV6_IFADDR multicast group — kernel notifies on any IPv6 address add/remove.
+const RTNLGRP_IPV6_IFADDR: u32 = 9;
+
+async fn run_ipv6_mode(output_path: PathBuf, signal_command: String) -> Result<()> {
+    tracing::info!("Starting ipv6 mode, writing to {}", output_path.display());
+
+    // Write initial state so the ddns process has a file to read on its first tick
+    write_if_inet6(&output_path)?;
+
+    let mut socket = TokioSocket::new(NETLINK_ROUTE)?;
+    socket.socket_mut().bind_auto()?;
+    socket.socket_mut().add_membership(RTNLGRP_IPV6_IFADDR)?;
+
+    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+    let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
+
+    // Buffer large enough for typical netlink messages
+    let mut buf = vec![0u8; 4096];
+
+    loop {
+        tokio::select! {
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM, exiting");
+                break;
+            }
+            _ = sigint.recv() => {
+                tracing::info!("Received SIGINT, exiting");
+                break;
+            }
+            result = socket.recv(&mut buf) => {
+                result.context("Netlink socket error")?;
+                tracing::info!("IPv6 address change detected");
+                match write_if_inet6(&output_path) {
+                    Ok(()) => signal_ddns(&signal_command).await?,
+                    Err(e) => tracing::error!("Failed to write if_inet6 file: {e}"),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn write_if_inet6(output_path: &Path) -> Result<()> {
+    let content = fs::read_to_string("/proc/net/if_inet6")
+        .context("Failed to read /proc/net/if_inet6")?;
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).context("Failed to create output directory")?;
+    }
+    fs::write(output_path, content)
+        .with_context(|| format!("Failed to write to {}", output_path.display()))?;
+    tracing::debug!("Wrote if_inet6 content to {}", output_path.display());
+    Ok(())
+}
+
+async fn signal_ddns(signal_command: &str) -> Result<()> {
+    tracing::info!("Running signal command: {signal_command}");
+    let status = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(signal_command)
+        .status()
+        .await
+        .context("Failed to run signal command")?;
+    if !status.success() {
+        tracing::warn!("Signal command exited with non-zero status: {status}");
+    }
     Ok(())
 }
 

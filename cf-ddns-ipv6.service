@@ -1,0 +1,21 @@
+[Unit]
+Description=cf-ddns IPv6 address monitor
+Documentation=https://github.com/avranju/cf-ddns
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cf-ddns ipv6 \
+    --output-path /run/cf-ddns/if_inet6 \
+    --signal-command "docker kill --signal SIGUSR1 cf_ddns"
+Restart=on-failure
+RestartSec=5s
+# Creates /run/cf-ddns/ before the service starts and removes it on stop.
+# The ddns container should volume-mount /run/cf-ddns/if_inet6 at the path
+# configured via if_inet6_path in its config.json.
+RuntimeDirectory=cf-ddns
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
