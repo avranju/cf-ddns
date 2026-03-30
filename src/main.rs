@@ -100,11 +100,6 @@ pub struct UnifiAddressItem {
 }
 
 #[derive(Debug, Serialize)]
-struct UnifiFirewallPolicyPatch {
-    description: String,
-}
-
-#[derive(Debug, Serialize)]
 struct UnifiUpdateRequest {
     #[serde(rename = "type")]
     list_type: String,
@@ -575,19 +570,41 @@ async fn kick_unifi_firewall_policy(
     config: &UnifiConfig,
     policy_id: &str,
 ) -> Result<()> {
-    let patch_url = format!(
+    let url = format!(
         "{}/proxy/network/integration/v1/sites/{}/firewall/policies/{}",
         config.base_url, config.site_id, policy_id
     );
 
-    let now = Local::now();
-    let description = format!("Trigger re-eval - {}.", now.format("%d-%b-%Y, %H:%M"));
-
-    http_client
-        .patch(&patch_url)
+    // GET the current policy as raw JSON to avoid modelling the full schema
+    let mut policy: serde_json::Value = http_client
+        .get(&url)
         .header("X-API-KEY", &config.api_key)
         .header("Accept", "application/json")
-        .json(&UnifiFirewallPolicyPatch { description })
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    // Update the description with a timestamp
+    let now = Local::now();
+    policy["description"] = serde_json::json!(
+        format!("Trigger re-eval - {}.", now.format("%d-%b-%Y, %H:%M"))
+    );
+
+    // Strip read-only fields the PUT endpoint does not accept
+    if let Some(obj) = policy.as_object_mut() {
+        obj.remove("id");
+        obj.remove("index");
+        obj.remove("metadata");
+    }
+
+    // PUT the policy back with the updated description
+    http_client
+        .put(&url)
+        .header("X-API-KEY", &config.api_key)
+        .header("Accept", "application/json")
+        .json(&policy)
         .send()
         .await?
         .error_for_status()?;
