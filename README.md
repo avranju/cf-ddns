@@ -45,17 +45,19 @@ Options:
     "poll_interval_secs": 300,
     "interface": "eth0",
     "if_inet6_path": "/proc/net/if_inet6",
-    "cloudflare": {
-        "api_key": "your_cloudflare_api_key",
-        "zone_id": "your_zone_id",
-        "proxied": true,
-        "records": [
-            {
-                "record_id": "record_id_1",
-                "domain_name": "example.com"
-            }
-        ]
-    },
+    "cloudflare": [
+        {
+            "api_key": "your_cloudflare_api_key",
+            "zone_id": "your_zone_id",
+            "proxied": true,
+            "records": [
+                {
+                    "record_id": "record_id_1",
+                    "domain_name": "example.com"
+                }
+            ]
+        }
+    ],
     "unifi": {
         "base_url": "https://192.168.1.1",
         "site_id": "your_site_uuid",
@@ -76,6 +78,8 @@ Options:
 | `if_inet6_path` | `/proc/net/if_inet6` | Path to read interface IPv6 addresses from. Override this when running in Docker (see [Deployment](#deployment)) |
 
 ### `cloudflare`
+
+`cloudflare` is an **array** of zone configs, allowing records across multiple Cloudflare zones to be updated simultaneously. Each entry has its own API token and zone ID, since Cloudflare tokens are typically scoped per zone.
 
 | Field | Default | Description |
 |---|---|---|

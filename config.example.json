@@ -1,21 +1,34 @@
 {
   "poll_interval_secs": 300,
   "interface": "eth0",
-  "cloudflare": {
-    "api_key": "your_cloudflare_api_key",
-    "zone_id": "your_zone_id",
-    "proxied": true,
-    "records": [
-      {
-        "record_id": "record_1",
-        "domain_name": "example.com"
-      },
-      {
-        "record_id": "record_2",
-        "domain_name": "sub.example.com"
-      }
-    ]
-  },
+  "cloudflare": [
+    {
+      "api_key": "your_cloudflare_api_key",
+      "zone_id": "your_zone_id",
+      "proxied": true,
+      "records": [
+        {
+          "record_id": "record_1",
+          "domain_name": "example.com"
+        },
+        {
+          "record_id": "record_2",
+          "domain_name": "sub.example.com"
+        }
+      ]
+    },
+    {
+      "api_key": "your_other_cloudflare_api_key",
+      "zone_id": "your_other_zone_id",
+      "proxied": false,
+      "records": [
+        {
+          "record_id": "record_3",
+          "domain_name": "other.org"
+        }
+      ]
+    }
+  ],
   "unifi": {
     "base_url": "https://192.168.1.1",
     "site_id": "ffffffff-ffff-ffff-ffff-ffffffffffff",

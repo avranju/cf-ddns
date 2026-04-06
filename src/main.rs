@@ -56,12 +56,12 @@ pub struct Config {
     /// Override when the file is volume-mounted into the container at a different path.
     #[serde(default = "default_if_inet6_path")]
     pub if_inet6_path: String,
-    pub cloudflare: CloudflareConfig,
+    pub cloudflare: Vec<CloudflareZoneConfig>,
     pub unifi: Option<UnifiConfig>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct CloudflareConfig {
+pub struct CloudflareZoneConfig {
     pub api_key: String,
     pub zone_id: String,
     #[serde(default = "default_proxied")]
@@ -154,11 +154,17 @@ async fn main() -> Result<()> {
             let config: Config =
                 serde_json::from_reader(reader).context("Failed to parse config file")?;
 
-            let credentials = Credentials::UserAuthToken {
-                token: config.cloudflare.api_key.clone(),
-            };
-            let cf_client =
-                CfClient::new(credentials, Default::default(), Environment::Production)?;
+            let cf_clients: Vec<CfClient> = config
+                .cloudflare
+                .iter()
+                .map(|zone| {
+                    let credentials = Credentials::UserAuthToken {
+                        token: zone.api_key.clone(),
+                    };
+                    CfClient::new(credentials, Default::default(), Environment::Production)
+                        .map_err(anyhow::Error::from)
+                })
+                .collect::<Result<_>>()?;
 
             // Create UniFi HTTP client if configured
             let unifi_client = if let Some(ref unifi_config) = config.unifi {
@@ -196,7 +202,7 @@ async fn main() -> Result<()> {
                         break;
                     }
                     _ = interval.tick() => {
-                        match run_once(&config, &cf_client, &mut cf_ip_cache, unifi_client.as_ref(), &mut unifi_ip_cache).await {
+                        match run_once(&config, &cf_clients, &mut cf_ip_cache, unifi_client.as_ref(), &mut unifi_ip_cache).await {
                             Ok(_) => {}
                             Err(e) => {
                                 tracing::error!("Run failed: {e}");
@@ -205,7 +211,7 @@ async fn main() -> Result<()> {
                     }
                     _ = sigusr1.recv() => {
                         tracing::info!("Received SIGUSR1, running update check");
-                        match run_once(&config, &cf_client, &mut cf_ip_cache, unifi_client.as_ref(), &mut unifi_ip_cache).await {
+                        match run_once(&config, &cf_clients, &mut cf_ip_cache, unifi_client.as_ref(), &mut unifi_ip_cache).await {
                             Ok(_) => {}
                             Err(e) => {
                                 tracing::error!("Run failed: {e}");
@@ -222,7 +228,7 @@ async fn main() -> Result<()> {
 
 async fn run_once(
     config: &Config,
-    cf_client: &CfClient,
+    cf_clients: &[CfClient],
     cf_cache: &mut HashMap<String, Ipv6Addr>,
     unifi_client: Option<&HttpClient>,
     unifi_cache: &mut HashMap<String, Ipv6Addr>,
@@ -230,34 +236,35 @@ async fn run_once(
     // get current public ip from local network interfaces
     let ip = find_local_ipv6(&config.if_inet6_path, config.interface.as_deref())?;
 
-    // Update Cloudflare DNS records
-    let cf_config = &config.cloudflare;
-    for record in &cf_config.records {
-        let record_id = &record.record_id;
+    // Update Cloudflare DNS records for each zone
+    for (zone_config, cf_client) in config.cloudflare.iter().zip(cf_clients.iter()) {
+        for record in &zone_config.records {
+            let record_id = &record.record_id;
 
-        // get current cloudflare record ip (from cache if available)
-        let record_ip = if let Some(cached_ip) = cf_cache.get(record_id) {
-            tracing::debug!(
-                "Using cached Cloudflare IP for {}: {cached_ip}",
-                record.domain_name
-            );
-            *cached_ip
-        } else {
-            let ip = find_cf_record_ip(cf_client, &cf_config.zone_id, record_id).await?;
-            tracing::debug!(
-                "Retrieved Cloudflare IP from API for {}: {ip}",
-                record.domain_name
-            );
-            cf_cache.insert(record_id.clone(), ip);
-            ip
-        };
+            // get current cloudflare record ip (from cache if available)
+            let record_ip = if let Some(cached_ip) = cf_cache.get(record_id) {
+                tracing::debug!(
+                    "Using cached Cloudflare IP for {}: {cached_ip}",
+                    record.domain_name
+                );
+                *cached_ip
+            } else {
+                let ip = find_cf_record_ip(cf_client, &zone_config.zone_id, record_id).await?;
+                tracing::debug!(
+                    "Retrieved Cloudflare IP from API for {}: {ip}",
+                    record.domain_name
+                );
+                cf_cache.insert(record_id.clone(), ip);
+                ip
+            };
 
-        // if ip has changed, update cloudflare record
-        if ip != record_ip {
-            update_cf_record(cf_config, record, cf_client, ip, cf_cache).await?;
-            tracing::info!("Updated Cloudflare IP for {} to {ip}", record.domain_name);
-        } else {
-            tracing::info!("Cloudflare IP {ip} for {} has not changed", record.domain_name);
+            // if ip has changed, update cloudflare record
+            if ip != record_ip {
+                update_cf_record(zone_config, record, cf_client, ip, cf_cache).await?;
+                tracing::info!("Updated Cloudflare IP for {} to {ip}", record.domain_name);
+            } else {
+                tracing::info!("Cloudflare IP {ip} for {} has not changed", record.domain_name);
+            }
         }
     }
 
@@ -304,7 +311,7 @@ async fn run_once(
 }
 
 async fn update_cf_record(
-    config: &CloudflareConfig,
+    config: &CloudflareZoneConfig,
     record: &RecordConfig,
     client: &CfClient,
     ip: Ipv6Addr,
